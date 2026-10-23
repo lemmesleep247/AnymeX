@@ -272,7 +272,9 @@ class ReaderController extends GetxController with WidgetsBindingObserver {
           .toList();
       files.sort((a, b) => a.path.compareTo(b.path));
       return files.map((f) => PageUrl(f.path)).toList();
-    } else if (chapter.link != null && chapter.link!.isNotEmpty) {
+    } else if (chapter.link != null &&
+        chapter.link!.isNotEmpty &&
+        sourceController.activeMangaSource.value != null) {
       return await sourceController.activeMangaSource.value!.methods
           .getPageList(DEpisode(episodeNumber: '1', url: chapter.link!));
     }
@@ -392,6 +394,8 @@ class ReaderController extends GetxController with WidgetsBindingObserver {
   final Map<String, List<PageUrl>> loadedChapterPages = {};
 
   late Worker _rpcWorker;
+  late Worker _pageRpcWorker;
+  Timer? _rpcPageDebounceTimer;
   final VolumeKeyHandler _volumeKeyHandler = VolumeKeyHandler();
   StreamSubscription? _volumeSubscription;
   Timer? _statsTimer;
@@ -427,11 +431,32 @@ class ReaderController extends GetxController with WidgetsBindingObserver {
     _startStatsTimer();
 
     _rpcWorker = ever(currentChapter, (_) {
+      final totalPages = pageList.isNotEmpty
+          ? pageList.length
+          : (currentChapter.value?.totalPages ?? 1);
       DiscordRPCController.instance.updateMangaPresence(
           manga: media,
           chapter: currentChapter.value!,
           totalChapters: chapterList.length.toString(),
-          currentPage: 1);
+          currentPage: currentPageIndex.value + 1,
+          totalPages: totalPages);
+    });
+
+    _pageRpcWorker = ever(currentPageIndex, (index) {
+      _rpcPageDebounceTimer?.cancel();
+      _rpcPageDebounceTimer = Timer(const Duration(seconds: 10), () {
+        if (isClosed || currentChapter.value == null) return;
+        final totalPages = pageList.isNotEmpty
+            ? pageList.length
+            : (currentChapter.value!.totalPages ?? 1);
+        DiscordRPCController.instance.updateMangaPresence(
+          manga: media,
+          chapter: currentChapter.value!,
+          totalChapters: chapterList.length.toString(),
+          currentPage: index + 1,
+          totalPages: totalPages,
+        );
+      });
     });
 
     ever(readingLayout, (_) => _computeSpreads());
@@ -565,14 +590,14 @@ class ReaderController extends GetxController with WidgetsBindingObserver {
   void onClose() {
     WidgetsBinding.instance.removeObserver(this);
 
-    Future.microtask(() {
-      _performFinalSave();
-    });
+    _performFinalSave();
 
     DiscordRPCController.instance.updateMediaPresence(
       media: media,
     );
 
+    _rpcPageDebounceTimer?.cancel();
+    _pageRpcWorker.dispose();
     _rpcWorker.dispose();
     WakelockPlus.disable();
     _disableVolumeKeys();
@@ -679,8 +704,7 @@ class ReaderController extends GetxController with WidgetsBindingObserver {
             if (Get.isRegistered<TrackBindingController>() &&
                 Get.find<TrackBindingController>().hasAnyBinding(media.id)) {
               unawaited(Get.find<TrackBindingController>()
-                  .pushProgress(media.id, newProgress,
-                      isAnime: false, status: 'CURRENT')
+                  .pushProgress(media.id, newProgress, isAnime: false)
                   .catchError((e) =>
                       Logger.i('Extension manga tracking failed: $e')));
             }
@@ -694,6 +718,8 @@ class ReaderController extends GetxController with WidgetsBindingObserver {
                 ?.toUpperCase();
             final isPlanning =
                 currentStatus == 'PLANNING' || currentStatus == 'PLAN_TO_READ';
+            final isRepeating = currentStatus == 'REPEATING';
+            final targetStatus = isRepeating ? 'REPEATING' : 'CURRENT';
             final int currentOnlineProgress = int.tryParse(
                     auth.onlineService.currentMedia.value.episodeCount ??
                         currentItem?.episodeCount ??
@@ -703,7 +729,7 @@ class ReaderController extends GetxController with WidgetsBindingObserver {
                 (isPlanning && newProgress >= 1)) {
               auth.onlineService.updateListEntry(UpdateListEntryParams(
                   listId: media.id,
-                  status: "CURRENT",
+                  status: targetStatus,
                   progress: newProgress,
                   syncIds: [media.idMal],
                   isAnime: false));
@@ -1344,7 +1370,7 @@ class ReaderController extends GetxController with WidgetsBindingObserver {
   }
 
   void _updatePageStateForSpread(int index, Chapter activeChapter) {
-    final activeKey = activeChapter.link ?? activeChapter.localPath ?? '';
+    final activeKey = _getChapterKey(activeChapter);
     final activePages = loadedChapterPages[activeKey] ?? [];
     final activeTotalPages =
         activePages.isEmpty ? pageList.length : activePages.length;
@@ -1363,13 +1389,29 @@ class ReaderController extends GetxController with WidgetsBindingObserver {
     }
 
     if (currentChapter.value != activeChapter) {
+      final oldChapter = currentChapter.value;
+      if (oldChapter != null) {
+        final oldTotal = oldChapter.totalPages ??
+            loadedChapterPages[_getChapterKey(oldChapter)]?.length ??
+            pageList.length;
+        _saveTracking(
+          manualChapter: oldChapter,
+          manualPage: oldTotal,
+          syncToCloud: false,
+        );
+      }
       currentChapter.value = activeChapter;
       _syncAvailability();
       _initTracking();
+      final totalPages = pageList.isNotEmpty
+          ? pageList.length
+          : (activeChapter.totalPages ?? 1);
       DiscordRPCController.instance.updateMangaPresence(
           manga: media,
           chapter: activeChapter,
-          totalChapters: chapterList.length.toString());
+          totalChapters: chapterList.length.toString(),
+          currentPage: currentPageIndex.value + 1,
+          totalPages: totalPages);
     }
 
     if (activePages.isNotEmpty &&
@@ -1452,10 +1494,15 @@ class ReaderController extends GetxController with WidgetsBindingObserver {
     activeTapIsWebtoon.value = _tapRepo.getActiveIsWebtoon();
     activeTapIsVertical.value = _tapRepo.getActiveIsVertical();
 
+    final totalPages = pageList.isNotEmpty
+        ? pageList.length
+        : (currentChapter.value?.totalPages ?? 1);
     DiscordRPCController.instance.updateMangaPresence(
         manga: media,
         chapter: currentChapter.value!,
-        totalChapters: chapterList.length.toString());
+        totalChapters: chapterList.length.toString(),
+        currentPage: currentPageIndex.value + 1,
+        totalPages: totalPages);
 
     final hasLocal = curCh.localPath != null &&
         Directory(curCh.localPath!).existsSync();
@@ -1499,8 +1546,7 @@ class ReaderController extends GetxController with WidgetsBindingObserver {
         if (Get.isRegistered<TrackBindingController>() &&
             Get.find<TrackBindingController>().hasAnyBinding(media.id)) {
           unawaited(Get.find<TrackBindingController>()
-              .pushProgress(media.id, newProgress,
-                  isAnime: false, status: 'CURRENT')
+              .pushProgress(media.id, newProgress, isAnime: false)
               .catchError((e) =>
                   Logger.i('Extension manga tracking failed: $e')));
         }
@@ -1516,6 +1562,8 @@ class ReaderController extends GetxController with WidgetsBindingObserver {
           ?.toUpperCase();
       final isPlanning =
           currentStatus == 'PLANNING' || currentStatus == 'PLAN_TO_READ';
+      final isRepeating = currentStatus == 'REPEATING';
+      final targetStatus = isRepeating ? 'REPEATING' : 'CURRENT';
       final int currentOnlineProgress = int.tryParse(
               auth.onlineService.currentMedia.value.episodeCount ??
                   currentItem?.episodeCount ??
@@ -1526,7 +1574,7 @@ class ReaderController extends GetxController with WidgetsBindingObserver {
           (isPlanning && newProgress >= 1)) {
         auth.onlineService.updateListEntry(UpdateListEntryParams(
             listId: media.id,
-            status: "CURRENT",
+            status: targetStatus,
             progress: newProgress,
             syncIds: [media.idMal],
             isAnime: false));

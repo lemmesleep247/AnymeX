@@ -1915,6 +1915,39 @@ class DownloadController extends GetxController {
     await _loadIndex();
   }
 
+  Future<void> updateChapterProgress(
+    String ext,
+    String title,
+    String chapterNumber,
+    int pageNumber,
+    int totalPages,
+  ) async {
+    final mediaDir = await _getMangaMediaDirPath(title, ext);
+    final metaFile = File(p.join(mediaDir, 'metadata.json'));
+    if (!await metaFile.exists()) return;
+
+    final raw =
+        jsonDecode(await metaFile.readAsString()) as Map<String, dynamic>;
+    final meta = DownloadedMangaMeta.fromJson(raw);
+
+    final updatedChapters = meta.chapters.map((ch) {
+      final chNum = ch.chapter.number?.toString();
+      if (chNum == chapterNumber) {
+        ch.chapter.pageNumber = pageNumber;
+        ch.chapter.totalPages = totalPages;
+        ch.chapter.lastReadTime = DateTime.now().millisecondsSinceEpoch;
+      }
+      return ch;
+    }).toList();
+
+    final updated = DownloadedMangaMeta(
+      chapters: updatedChapters,
+      media: meta.media,
+    );
+    await metaFile.writeAsString(jsonEncode(updated.toJson()), flush: true);
+    mangaMetaCache[_cacheKey(ext, title)] = updated;
+  }
+
   Future<DownloadedMediaMeta?> getMediaMeta(String ext, String title) async {
     final mediaDir = await _getMediaDirPath(title, ext, mediaType: 'Anime');
     await _syncMediaFolderMeta(
@@ -1934,9 +1967,15 @@ class DownloadController extends GetxController {
 
   Future<void> deleteMedia(String ext, String title,
       {String mediaType = 'Anime'}) async {
-    final mediaDir = await _getMediaDirPath(title, ext, mediaType: mediaType);
-    final dir = Directory(mediaDir);
-    if (await dir.exists()) await dir.delete(recursive: true);
+    final root = await _getRootDir();
+    final directDir = Directory(p.join(root.path, mediaType, ext, title));
+    if (await directDir.exists()) {
+      await directDir.delete(recursive: true);
+    } else {
+      final mediaDir = await _getMediaDirPath(title, ext, mediaType: mediaType);
+      final dir = Directory(mediaDir);
+      if (await dir.exists()) await dir.delete(recursive: true);
+    }
     mediaMetaCache.remove(_cacheKey(ext, title));
     mangaMetaCache.remove(_cacheKey(ext, title));
     await _removeFromGlobalIndex(ext, title);
@@ -1945,8 +1984,13 @@ class DownloadController extends GetxController {
 
   Future<void> deleteEpisode(String ext, String title, String epNumber,
       Map<String, String> sortMap) async {
-    final mediaDir = await _getMediaDirPath(title, ext, mediaType: 'Anime');
-    final metaFile = File(p.join(mediaDir, 'metadata.json'));
+    final root = await _getRootDir();
+    var mediaDir = p.join(root.path, 'Anime', ext, title);
+    var metaFile = File(p.join(mediaDir, 'metadata.json'));
+    if (!await metaFile.exists()) {
+      mediaDir = await _getMediaDirPath(title, ext, mediaType: 'Anime');
+      metaFile = File(p.join(mediaDir, 'metadata.json'));
+    }
     if (!await metaFile.exists()) return;
 
     final raw =
@@ -1977,8 +2021,13 @@ class DownloadController extends GetxController {
 
   Future<void> deleteChapter(
       String ext, String title, double? chapterNum) async {
-    final mediaDir = await _getMediaDirPath(title, ext, mediaType: 'Manga');
-    final metaFile = File(p.join(mediaDir, 'metadata.json'));
+    final root = await _getRootDir();
+    var mediaDir = p.join(root.path, 'Manga', ext, title);
+    var metaFile = File(p.join(mediaDir, 'metadata.json'));
+    if (!await metaFile.exists()) {
+      mediaDir = await _getMediaDirPath(title, ext, mediaType: 'Manga');
+      metaFile = File(p.join(mediaDir, 'metadata.json'));
+    }
     if (!await metaFile.exists()) return;
 
     final raw =
@@ -2014,7 +2063,8 @@ class DownloadController extends GetxController {
         jsonDecode(await indexFile.readAsString()) as Map<String, dynamic>;
     final items = (raw['items'] as List<dynamic>? ?? [])
         .map((e) => e as Map<String, dynamic>)
-        .where((i) => !(i['extensionName'] == ext && i['folderName'] == title))
+        .where((i) => !(i['extensionName'] == ext &&
+            (i['folderName'] == title || i['title'] == title)))
         .toList();
     await indexFile.writeAsString(jsonEncode({'items': items}), flush: true);
   }
