@@ -3,6 +3,7 @@ import 'package:anymex/screens/downloads/controller/download_controller.dart';
 import 'package:anymex/screens/downloads/model/download_models.dart';
 import 'package:anymex/database/isar_models/episode.dart';
 import 'package:anymex/database/isar_models/video.dart' as hive;
+import 'package:anymex/utils/language.dart';
 import 'package:anymex/utils/theme_extensions.dart';
 import 'package:anymex/widgets/anymex_widgets/anymex_text.dart';
 import 'package:anymex/widgets/helper/tv_wrapper.dart';
@@ -21,12 +22,14 @@ class DownloadServerSelector extends StatefulWidget {
   final List<Episode> episodes;
   final Source source;
   final OfflineMedia media;
+  final bool isFromMetadataPage;
 
   const DownloadServerSelector({
     super.key,
     required this.episodes,
     required this.source,
     required this.media,
+    this.isFromMetadataPage = true,
   });
 
   static Future<bool> show(
@@ -34,6 +37,7 @@ class DownloadServerSelector extends StatefulWidget {
     required List<Episode> episodes,
     required Source source,
     required OfflineMedia media,
+    bool isFromMetadataPage = true,
   }) async {
     if (!await DownloadPermissionDialog.checkAndPrompt(context)) {
       return false;
@@ -44,6 +48,7 @@ class DownloadServerSelector extends StatefulWidget {
         episodes: episodes,
         source: source,
         media: media,
+        isFromMetadataPage: isFromMetadataPage,
       ),
       context,
       showDragHandle: true,
@@ -191,6 +196,7 @@ class _DownloadServerSelectorState extends State<DownloadServerSelector> {
           widget.episodes.length == 1 ? selectedVideo?.headers : null,
       firstEpisodeSubtitles:
           widget.episodes.length == 1 ? selectedVideo?.subtitles : null,
+      isFromMetadataPage: widget.isFromMetadataPage,
     );
     snackBar(
       'Downloading ${widget.episodes.length} episode${widget.episodes.length != 1 ? 's' : ''}...',
@@ -239,7 +245,8 @@ class _DownloadServerSelectorState extends State<DownloadServerSelector> {
                 const AnymeXText('Choose Quality',
                     variant: TextVariant.bold,
                     size: 16),
-                AnymeXText('Fetching from first episode · auto-matched for batch',
+                AnymeXText(
+                  '${widget.source.name ?? 'Unknown'}${widget.source.lang != null && widget.source.lang!.isNotEmpty ? ' (${completeLanguageName(widget.source.lang!)})' : ''} · auto-matched for batch',
                   size: 12,
                   color: theme.onSurface.opaque(0.5),
                 ),
