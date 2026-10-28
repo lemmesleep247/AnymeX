@@ -45,8 +45,6 @@ import 'package:anymex/services/fcm_service.dart'
 import 'package:anymex/services/commentum_service.dart';
 import 'package:anymex/controllers/watchium/watchium_service.dart';
 import 'package:anymex/utils/logger.dart';
-import 'package:anymex/screens/notifications/notification_screen.dart';
-import 'package:anymex/screens/notifications/notification_controller.dart';
 import 'package:anymex/utils/notification.dart';
 import 'package:anymex/utils/deeplink.dart';
 import 'package:anymex/utils/external_font_loader.dart';
@@ -68,7 +66,6 @@ import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
-import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:get/get.dart';
 import 'package:hugeicons/hugeicons.dart';
 import 'package:flutter_iconly/flutter_iconly.dart';
@@ -79,7 +76,6 @@ import 'package:media_kit/media_kit.dart';
 import 'package:provider/provider.dart';
 import 'package:window_manager/window_manager.dart';
 
-WebViewEnvironment? webViewEnvironment;
 late Isar isar;
 final appLinks = AppLinks();
 
@@ -157,19 +153,6 @@ Future<void> safeCall(FutureOr<void> Function() function,
 void main(List<String> args) async {
   runZonedGuarded(() async {
     WidgetsFlutterBinding.ensureInitialized();
-
-    await safeCall(() async {
-      if (!Platform.isLinux) {
-        if (Platform.isWindows) {
-          webViewEnvironment = await WebViewEnvironment.create();
-        }
-        if (Platform.isAndroid || Platform.isIOS) {
-          await InAppWebViewController.setWebContentsDebuggingEnabled(
-            !const bool.fromEnvironment('dart.vm.product'),
-          );
-        }
-      }
-    }, errorMessage: 'Failed to initialize WebViewEnvironment');
 
     await safeCall(() => ExternalFontLoader.loadAllFonts(),
         errorMessage: 'Failed to load external fonts');

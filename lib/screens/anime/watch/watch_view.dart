@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:anymex/controllers/watchium/watchium_service.dart';
 import 'package:anymex/controllers/watchium/watchium_sync_controller.dart';
 import 'package:anymex/database/data_keys/keys.dart';
@@ -18,11 +20,11 @@ import 'package:anymex/screens/anime/watch/controls/widgets/speed_popup.dart';
 import 'package:anymex/screens/anime/watch/controls/widgets/watch_together_popup.dart';
 import 'package:anymex/widgets/watchium/watchium_live_overlays.dart';
 import 'package:anymex/screens/anime/watch/controls/widgets/sync_subs_popup.dart';
+import 'package:anymex/screens/anime/watch/controls/widgets/torrent_files_popup.dart';
 import 'package:anymex/screens/anime/widgets/media_indicator.dart';
 import 'package:anymex/screens/anime/watch/controls/widgets/shader_osd.dart';
 import 'package:anymex/widgets/watchium/watchium_party_popup.dart';
-import 'package:anymex_extension_runtime_bridge/AddonManager.dart';
-import 'package:anymex_extension_runtime_bridge/Engines/TorrentEngine/TorrServerAddon.dart';
+import 'package:anymex/controllers/services/torrent/torrent_service.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 
@@ -128,12 +130,7 @@ class _WatchScreenState extends State<WatchScreen> {
     _inRoomWorker?.dispose();
     _disposeSyncController();
     try {
-      if (Get.isRegistered<AddonManager>()) {
-        final torr = Get.find<AddonManager>().get<TorrServerAddon>();
-        if (torr.isRunning) {
-          torr.stop();
-        }
-      }
+      unawaited(TorrentService.instance.stopStream());
     } catch (_) {}
     Get.delete<PlayerController>();
     super.dispose();
@@ -142,114 +139,135 @@ class _WatchScreenState extends State<WatchScreen> {
   @override
   Widget build(BuildContext context) {
     return PopScope(
-      canPop: false,
-      onPopInvokedWithResult: (didPop, _) async {
-        if (didPop) return;
-        final shouldPop = await _onWillPop();
-        if (shouldPop && context.mounted) {
-          Navigator.of(context).pop();
-        }
-      },
-      child: Scaffold(
-        body: Obx(() {
-          final isPip = controller.isPipMode.value;
-          return Stack(
-            children: [
-              Obx(() => KeyedSubtree(
-                    key: ValueKey(controller.playerReloadVersion.value),
-                    child: controller.videoWidget,
-                  )),
-              if (!PlayerKeys.useLibass.get<bool>(false))
-                SubtitleText(controller: controller),
-              if (!isPip) ...[
-                PlayerOverlay(controller: controller),
-                BufferingOverlay(controller: controller),
-                DoubleTapSeekWidget(
-                  controller: controller,
-                ),
-                const Align(
-                  alignment: Alignment.center,
-                  child: ThemedCenterControls(),
-                ),
-                const Align(
-                  alignment: Alignment.topCenter,
-                  child: ThemedTopControls(),
-                ),
-                const Align(
-                  alignment: Alignment.bottomCenter,
-                  child: ThemedBottomControls(),
-                ),
-                MediaIndicatorBuilder(
-                  isVolumeIndicator: false,
-                  controller: controller,
-                ),
-                MediaIndicatorBuilder(
-                  isVolumeIndicator: true,
-                  controller: controller,
-                ),
-                ShaderOsd(controller: controller),
-                Positioned(
-                  right: 0,
-                  top: 0,
-                  bottom: 0,
-                  left: 0,
-                  child: SourcePopup(controller: controller),
-                ),
-                Positioned(
-                  right: 0,
-                  top: 0,
-                  bottom: 0,
-                  left: 0,
-                  child: TracksPopup(controller: controller),
-                ),
-                Positioned(
-                  right: 0,
-                  top: 0,
-                  bottom: 0,
-                  left: 0,
-                  child: AudioPopup(controller: controller),
-                ),
-                Positioned(
-                  right: 0,
-                  top: 0,
-                  bottom: 0,
-                  left: 0,
-                  child: SyncSubsPopup(controller: controller),
-                ),
-                Positioned(
-                  right: 0,
-                  top: 0,
-                  bottom: 0,
-                  left: 0,
-                  child: EpisodesPane(controller: controller),
-                ),
-                Positioned(
-                  right: 0,
-                  top: 0,
-                  bottom: 0,
-                  left: 0,
-                  child: SpeedPopup(controller: controller),
-                ),
-                Positioned(
-                  right: 0,
-                  top: 0,
-                  bottom: 0,
-                  left: 0,
-                  child: WatchTogetherPopup(controller: controller),
-                ),
-                const Positioned(
-                  right: 0,
-                  top: 0,
-                  bottom: 0,
-                  left: 0,
-                  child: WatchiumPartyPopup(),
-                ),
-                const _WatchiumOverlays(),
-              ],
-            ],
-          );
-        }),
-      ),
-    );
+        canPop: false,
+        onPopInvokedWithResult: (didPop, _) async {
+          if (didPop) return;
+          final shouldPop = await _onWillPop();
+          if (shouldPop && context.mounted) {
+            Navigator.of(context).pop();
+          }
+        },
+        child: Theme(
+          data: Theme.of(context).copyWith(
+            focusColor: Colors.transparent,
+            highlightColor: Colors.transparent,
+          ),
+          child: Scaffold(
+            body: Obx(() {
+              final isPip = controller.isPipMode.value;
+              return Stack(
+                children: [
+                  Obx(() => KeyedSubtree(
+                        key: ValueKey(controller.playerReloadVersion.value),
+                        child: controller.videoWidget,
+                      )),
+                  if (!PlayerKeys.useLibass.get<bool>(false))
+                    SubtitleText(controller: controller),
+                  if (!isPip) ...[
+                    PlayerOverlay(controller: controller),
+                    BufferingOverlay(controller: controller),
+                    DoubleTapSeekWidget(
+                      controller: controller,
+                    ),
+                    ExcludeFocus(
+                      excluding: !controller.showControls.value,
+                      child: const Align(
+                        alignment: Alignment.center,
+                        child: ThemedCenterControls(),
+                      ),
+                    ),
+                    ExcludeFocus(
+                      excluding: !controller.showControls.value,
+                      child: const Align(
+                        alignment: Alignment.topCenter,
+                        child: ThemedTopControls(),
+                      ),
+                    ),
+                    ExcludeFocus(
+                      excluding: !controller.showControls.value,
+                      child: const Align(
+                        alignment: Alignment.bottomCenter,
+                        child: ThemedBottomControls(),
+                      ),
+                    ),
+                    MediaIndicatorBuilder(
+                      isVolumeIndicator: false,
+                      controller: controller,
+                    ),
+                    MediaIndicatorBuilder(
+                      isVolumeIndicator: true,
+                      controller: controller,
+                    ),
+                    ShaderOsd(controller: controller),
+                    Positioned(
+                      right: 0,
+                      top: 0,
+                      bottom: 0,
+                      left: 0,
+                      child: SourcePopup(controller: controller),
+                    ),
+                    Positioned(
+                      right: 0,
+                      top: 0,
+                      bottom: 0,
+                      left: 0,
+                      child: TracksPopup(controller: controller),
+                    ),
+                    Positioned(
+                      right: 0,
+                      top: 0,
+                      bottom: 0,
+                      left: 0,
+                      child: AudioPopup(controller: controller),
+                    ),
+                    Positioned(
+                      right: 0,
+                      top: 0,
+                      bottom: 0,
+                      left: 0,
+                      child: SyncSubsPopup(controller: controller),
+                    ),
+                    Positioned(
+                      right: 0,
+                      top: 0,
+                      bottom: 0,
+                      left: 0,
+                      child: EpisodesPane(controller: controller),
+                    ),
+                    Positioned(
+                      right: 0,
+                      top: 0,
+                      bottom: 0,
+                      left: 0,
+                      child: SpeedPopup(controller: controller),
+                    ),
+                    Positioned(
+                      right: 0,
+                      top: 0,
+                      bottom: 0,
+                      left: 0,
+                      child: WatchTogetherPopup(controller: controller),
+                    ),
+                    Positioned(
+                      right: 0,
+                      top: 0,
+                      bottom: 0,
+                      left: 0,
+                      child: TorrentFilesPopup(controller: controller),
+                    ),
+                    const Positioned(
+                      right: 0,
+                      top: 0,
+                      bottom: 0,
+                      left: 0,
+                      child: WatchiumPartyPopup(),
+                    ),
+                    const _WatchiumOverlays(),
+                  ],
+                ],
+              );
+            }),
+          ),
+        ));
   }
 }
