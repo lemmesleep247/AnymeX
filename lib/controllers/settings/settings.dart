@@ -455,6 +455,58 @@ class Settings extends GetxController {
     update();
   }
 
+  bool get useComputedBlur => _getUISetting((s) => s.useComputedBlur);
+  set useComputedBlur(bool value) {
+    uiSettings.update((s) => s?.useComputedBlur = value);
+    UISettingsKeys.useComputedBlur.set(value);
+    uiSettings.refresh();
+    update();
+  }
+
+  int get detailsBlurStyle => _getUISetting((s) => s.detailsBlurStyle);
+  set detailsBlurStyle(int value) {
+    uiSettings.update((s) => s?.detailsBlurStyle = value);
+    UISettingsKeys.detailsBlurStyle.set(value);
+    if (value == 1) {
+      useComputedBlur = true;
+    }
+    uiSettings.refresh();
+    update();
+  }
+
+  int get detailsBlurScope => _getUISetting((s) => s.detailsBlurScope);
+  set detailsBlurScope(int value) {
+    uiSettings.update((s) => s?.detailsBlurScope = value);
+    UISettingsKeys.detailsBlurScope.set(value);
+    fullScreenBlur = value == 1;
+    uiSettings.refresh();
+    update();
+  }
+
+  bool get fullScreenBlur => _getUISetting((s) => s.fullScreenBlur);
+  set fullScreenBlur(bool value) {
+    uiSettings.update((s) => s?.fullScreenBlur = value);
+    UISettingsKeys.fullScreenBlur.set(value);
+    uiSettings.refresh();
+    update();
+  }
+
+  bool get tintBlur => _getUISetting((s) => s.tintBlur);
+  set tintBlur(bool value) {
+    uiSettings.update((s) => s?.tintBlur = value);
+    UISettingsKeys.tintBlur.set(value);
+    uiSettings.refresh();
+    update();
+  }
+
+  bool get usePosterForBlur => _getUISetting((s) => s.usePosterForBlur);
+  set usePosterForBlur(bool value) {
+    uiSettings.update((s) => s?.usePosterForBlur = value);
+    UISettingsKeys.usePosterForBlur.set(value);
+    uiSettings.refresh();
+    update();
+  }
+
   Map<String, bool> get homePageCards => _getUISetting((s) => s.homePageCards);
   Map<String, bool> get homePageCardsMal =>
       _getUISetting((s) => s.homePageCardsMal);

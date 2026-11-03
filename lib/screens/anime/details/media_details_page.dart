@@ -1,3 +1,4 @@
+import 'dart:ui';
 import 'package:anymex/database/isar_models/episode.dart';
 import 'package:anymex/utils/media_share.dart';
 import 'package:anymex/models/Media/media.dart';
@@ -25,21 +26,27 @@ import 'package:anymex/screens/manga/reading_page.dart';
 import 'package:anymex/screens/novel/reader/novel_reader.dart';
 import 'package:anymex/screens/manga/widgets/track_dialog.dart';
 import 'package:anymex/database/data_keys/keys.dart';
+import 'package:anymex/utils/color_extractor.dart';
 import 'package:anymex/controllers/track/track_binding_controller.dart';
 import 'package:anymex/controllers/service_handler/service_handler.dart';
 import 'package:anymex/controllers/settings/settings.dart';
 import 'package:anymex/widgets/anime/media_header.dart';
 import 'package:anymex/widgets/common/anymex_scaffold.dart';
+import 'package:anymex/widgets/common/baked_blur_image.dart';
+import 'package:anymex/widgets/helper/keep_alive_wrapper.dart';
 import 'package:anymex/widgets/common/reusable_carousel.dart';
 import 'package:anymex_extension_runtime_bridge/anymex_extension_runtime_bridge.dart';
 import 'package:anymex/widgets/anymex_widgets/anymex_container.dart';
 import 'package:anymex/widgets/anymex_widgets/anymex_image.dart';
 import 'package:anymex/widgets/common/navbar.dart';
 import 'package:anymex/widgets/anymex_widgets/anymex_text.dart';
-import 'package:anymex/widgets/helper/tv_wrapper.dart';
 import 'package:anymex/widgets/helper/platform_builder.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:get/get.dart';
+import 'package:anymex/controllers/settings/methods.dart';
+import 'package:anymex/widgets/anymex_widgets/anymex_linear_indicator.dart';
+import 'package:anymex/widgets/animation/widget_animations.dart';
 
 class MediaDetailsPage extends StatefulWidget {
   final Media media;
@@ -64,8 +71,8 @@ class MediaDetailsPage extends StatefulWidget {
 class _MediaDetailsPageState extends State<MediaDetailsPage> {
   late final MediaDetailsController controller;
   late final PageController pageController;
+  late final RxString _posterColor;
   bool _isAnimatingPage = false;
-  bool _isContinueExpanded = false;
 
   CommentSectionController get _commentController {
     final media = widget.media;
@@ -87,9 +94,33 @@ class _MediaDetailsPageState extends State<MediaDetailsPage> {
     );
   }
 
+  void _resolvePosterColor(Media media) {
+    if (media.color.isNotEmpty) {
+      if (_posterColor.value != media.color) {
+        _posterColor.value = media.color;
+      }
+      return;
+    }
+    final poster = media.poster;
+    if (poster.isEmpty) return;
+    final cached = ImageColorExtractor.getCachedColor(poster);
+    if (cached != null) {
+      _posterColor.value = '#${cached.value.toRadixString(16).padLeft(8, '0')}';
+      return;
+    }
+    ImageColorExtractor.extractColor(poster).then((c) {
+      if (c != null && mounted) {
+        _posterColor.value = '#${c.value.toRadixString(16).padLeft(8, '0')}';
+      }
+    });
+  }
+
   @override
   void initState() {
     super.initState();
+    _posterColor =
+        (widget.media.color.isNotEmpty ? widget.media.color : '').obs;
+    _resolvePosterColor(widget.media);
     final initialPage = widget.scrollToCommentId != null
         ? 2
         : widget.initialTabIndex;
@@ -135,60 +166,262 @@ class _MediaDetailsPageState extends State<MediaDetailsPage> {
 
   @override
   Widget build(BuildContext context) {
-    return AnymeXScaffold(
-      extendBody: true,
-      resizeToAvoidBottomInset: false,
-      bottomNavigationBar: buildBottomNavBar(context),
-      body: ScrollConfiguration(
-        behavior: ScrollConfiguration.of(context).copyWith(scrollbars: false),
-        child: Align(
-          alignment: Alignment.topCenter,
-          child: NestedScrollView(
-            headerSliverBuilder: (context, innerBoxIsScrolled) => [
-              SliverToBoxAdapter(
-                child: Obx(() => MediaHeader(
-                      tag: widget.tag,
-                      data: controller.media.value,
-                      posterUrl: controller.media.value.poster,
-                      userStatus: controller.mediaStatus.value,
-                      userProgress: '${controller.mediaProgress.value}',
-                      onShare: () => MediaShare.showOptions(
-                        context: context,
-                        baseMedia: controller.media.value,
-                        hydratedMedia: controller.media.value,
-                        isManga: controller.isManga || controller.isNovel,
+    return Obx(() {
+      final currentMedia = controller.media.value;
+      if (currentMedia.color.isNotEmpty &&
+          _posterColor.value != currentMedia.color) {
+        _posterColor.value = currentMedia.color;
+      } else if (_posterColor.value.isEmpty && currentMedia.poster.isNotEmpty) {
+        _resolvePosterColor(currentMedia);
+      }
+
+      final activeColor = currentMedia.color.isNotEmpty
+          ? currentMedia.color
+          : _posterColor.value;
+      final posterSeed =
+          (activeColor.isNotEmpty && settingsController.usePosterColor)
+              ? AnymeXScaffold.parseColor(activeColor)
+              : null;
+      final posterScheme = posterSeed != null
+          ? ColorScheme.fromSeed(
+              brightness: Theme.of(context).brightness,
+              seedColor: posterSeed,
+            )
+          : null;
+
+      Widget buildScaffold(BuildContext themedContext) {
+        return AnymeXScaffold(
+          color: _posterColor.value,
+          extendBody: true,
+          resizeToAvoidBottomInset: false,
+          bottomNavigationBar: buildBottomNavBar(themedContext),
+          body: Obx(() {
+            final blurScope = settingsController.detailsBlurScope;
+            final isMesh = settingsController.detailsBlurStyle == 1;
+            final isBaked = isMesh || settingsController.useComputedBlur;
+            final blurAmount =
+                UISettingsKeys.detailsBlurAmount.get<double>(20.0);
+            final brightness =
+                UISettingsKeys.detailsBackdropBrightness.get<double>(1.0);
+            final media = controller.media.value;
+            final posterUrl = media.poster;
+            final coverUrl =
+                (media.cover?.isNotEmpty == true ? media.cover! : posterUrl);
+            final usePoster = settingsController.usePosterForBlur;
+            final blurSourceUrl = usePoster ? posterUrl : coverUrl;
+            final initialPoster = widget.media.poster;
+            final blurFallbackUrl = initialPoster.isNotEmpty
+                ? initialPoster
+                : (usePoster ? coverUrl : posterUrl);
+            final tintBlur = settingsController.tintBlur;
+            final colors = themedContext.colors;
+            final blurColor = tintBlur ? colors.primary.opaque(0.4) : null;
+            final isDark =
+                Theme.of(themedContext).brightness == Brightness.dark;
+            final baseArtworkColor = tintBlur
+                ? colors.primary
+                : (AnymeXScaffold.parseColor(_posterColor.value) ??
+                    colors.primary);
+            final gradientBgColor = Color.alphaBlend(
+              baseArtworkColor.withValues(alpha: isDark ? 0.20 : 0.12),
+              colors.surface,
+            );
+
+            final scrollView = ScrollConfiguration(
+              behavior: ScrollConfiguration.of(themedContext)
+                  .copyWith(scrollbars: false),
+              child: Align(
+                alignment: Alignment.topCenter,
+                child: NestedScrollView(
+                  headerSliverBuilder: (context, innerBoxIsScrolled) => [
+                    SliverToBoxAdapter(
+                      child: Obx(() => MediaHeader(
+                            tag: widget.tag,
+                            data: controller.media.value,
+                            posterUrl: controller.media.value.poster,
+                            userStatus: controller.mediaStatus.value,
+                            userProgress: '${controller.mediaProgress.value}',
+                            onShare: () => MediaShare.showOptions(
+                              context: themedContext,
+                              baseMedia: controller.media.value,
+                              hydratedMedia: controller.media.value,
+                              isManga: controller.isManga || controller.isNovel,
+                            ),
+                          )),
+                    ),
+                    SliverToBoxAdapter(
+                      child: Center(
+                        child: Column(
+                          children: [
+                            buildMediaQuickActions(themedContext, controller)
+                                .animateSpring(
+                                    delay: const Duration(milliseconds: 100)),
+                            const SizedBox(height: 12),
+                          ],
+                        ),
                       ),
-                    )),
-              ),
-              SliverToBoxAdapter(
-                child: Center(
-                  child: Column(
+                    ),
+                  ],
+                  body: PageView(
+                    controller: pageController,
+                    physics: const BouncingScrollPhysics(),
+                    onPageChanged: (index) {
+                      if (!_isAnimatingPage) {
+                        controller.selectedPage.value = index;
+                      }
+                    },
                     children: [
-                      buildMediaQuickActions(context, controller),
-                      const SizedBox(height: 12),
+                      KeepAliveWrapper(child: _buildOverviewTab(themedContext)),
+                      KeepAliveWrapper(child: _buildContentTab(themedContext)),
+                      KeepAliveWrapper(child: _buildCommentsTab(themedContext)),
                     ],
                   ),
                 ),
               ),
-            ],
-            body: PageView(
-              controller: pageController,
-              physics: const BouncingScrollPhysics(),
-              onPageChanged: (index) {
-                if (!_isAnimatingPage) {
-                  controller.selectedPage.value = index;
-                }
-              },
+            );
+
+            Widget buildBlurredImage({double? height}) {
+              return isBaked
+                  ? BakedBlurImage(
+                      url: blurSourceUrl,
+                      fallback: blurFallbackUrl,
+                      saturation: 1.0,
+                      blurAmount: blurAmount,
+                      brightness: brightness,
+                      color: blurColor,
+                      fit: BoxFit.cover,
+                      height: height,
+                      width: double.infinity,
+                      isMesh: isMesh,
+                    )
+                  : ColorFiltered(
+                      colorFilter: ColorFilter.matrix([
+                        brightness, 0, 0, 0, 0,
+                        0, brightness, 0, 0, 0,
+                        0, 0, brightness, 0, 0,
+                        0, 0, 0, 1, 0,
+                      ]),
+                      child: ImageFiltered(
+                        imageFilter: ImageFilter.blur(
+                            sigmaX: blurAmount, sigmaY: blurAmount),
+                        child: AnymeXImage(
+                          imageUrl: blurSourceUrl,
+                          errorImage: blurFallbackUrl,
+                          radius: 0,
+                          fit: BoxFit.cover,
+                          width: double.infinity,
+                          height: height ?? double.infinity,
+                          color: blurColor,
+                        ),
+                      ),
+                    );
+            }
+
+            if (blurScope == 0 || coverUrl.isEmpty) {
+              return scrollView;
+            }
+
+            if (blurScope == 2) {
+              final washHeight = (MediaQuery.sizeOf(themedContext).height * 0.48)
+                  .clamp(320.0, 520.0);
+              return Stack(
+                fit: StackFit.expand,
+                children: [
+                  Positioned.fill(
+                    child: Container(
+                      color: gradientBgColor,
+                    ),
+                  ),
+                  Positioned(
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    height: washHeight,
+                    child: Container(
+                      decoration: const BoxDecoration(
+                        border: Border(
+                          bottom: BorderSide(
+                              color: Colors.transparent, width: 2.0),
+                        ),
+                      ),
+                      child: RepaintBoundary(
+                        child: buildBlurredImage(height: washHeight),
+                      ),
+                    ),
+                  ),
+                  Positioned(
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    height: washHeight + 1.0,
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        border: const Border(
+                          bottom: BorderSide(
+                              color: Colors.transparent, width: 2.0),
+                        ),
+                        gradient: LinearGradient(
+                          begin: Alignment.topCenter,
+                          end: Alignment.bottomCenter,
+                          stops: const [0.0, 0.30, 0.60, 0.85, 1.0],
+                          colors: [
+                            gradientBgColor.withValues(
+                                alpha: isDark ? 0.30 : 0.10),
+                            gradientBgColor.withValues(
+                                alpha: isDark ? 0.55 : 0.25),
+                            gradientBgColor.withValues(
+                                alpha: isDark ? 0.85 : 0.65),
+                            gradientBgColor,
+                            gradientBgColor,
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                  scrollView,
+                ],
+              );
+            }
+
+            return Stack(
+              fit: StackFit.expand,
               children: [
-                _buildOverviewTab(context),
-                _buildContentTab(context),
-                _buildCommentsTab(context),
+                Positioned.fill(
+                  child: RepaintBoundary(
+                    child: buildBlurredImage(),
+                  ),
+                ),
+                Positioned.fill(
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        begin: Alignment.topCenter,
+                        end: Alignment.bottomCenter,
+                        colors: [
+                          colors.surface.withValues(alpha: 0.40),
+                          colors.surface.withValues(alpha: 0.65),
+                          colors.surface.withValues(alpha: 0.90),
+                        ],
+                        stops: const [0.0, 0.45, 1.0],
+                      ),
+                    ),
+                  ),
+                ),
+                scrollView,
               ],
-            ),
-          ),
-        ),
-      ),
-    );
+            );
+          }),
+        );
+      }
+
+      if (posterScheme != null) {
+        return Theme(
+          data: Theme.of(context).copyWith(colorScheme: posterScheme),
+          child: Builder(builder: (ctx) => buildScaffold(ctx)),
+        );
+      }
+      return buildScaffold(context);
+    });
   }
 
   Widget buildBottomNavBar(BuildContext context) {
@@ -360,25 +593,35 @@ class _MediaDetailsPageState extends State<MediaDetailsPage> {
                     if (controller.isAnilistLoading.value) {
                       return _buildStatsShimmer(context).bottomSpacing(16);
                     }
-                    return buildMediaStatsSection(context, controller)
-                        .bottomSpacing(16);
+                    return KeyedSubtree(
+                      key: ValueKey('media_stats_${controller.selectedPage.value}'),
+                      child: buildMediaStatsSection(context, controller)
+                          .bottomSpacing(16)
+                          .animateSection(onScroll: false),
+                    );
                   }),
                   Obx(() {
                     if (controller.isAnilistLoading.value) {
                       return _buildShimmerCarousel(context);
                     }
-                    return buildCharactersSection(context, mediaData);
+                    return KeyedSubtree(
+                      key: const ValueKey('media_characters'),
+                      child: buildCharactersSection(context, mediaData),
+                    );
                   }),
                   Obx(() {
                     if (controller.isAnilistLoading.value) {
                       return _buildShimmerCarousel(context);
                     }
                     if (rels.isEmpty) return const SizedBox.shrink();
-                    return ReusableCarousel(
-                      data: rels,
-                      title: 'Relations',
-                      variant: DataVariant.relation,
-                    ).bottomSpacing(16);
+                    return KeyedSubtree(
+                      key: const ValueKey('media_relations'),
+                      child: ReusableCarousel(
+                        data: rels,
+                        title: 'Relations',
+                        variant: DataVariant.relation,
+                      ).bottomSpacing(16),
+                    );
                   }),
                   Obx(() {
                     if (controller.isSecondaryLoading.value) {
@@ -387,8 +630,11 @@ class _MediaDetailsPageState extends State<MediaDetailsPage> {
                     if (mediaData.staff == null || mediaData.staff!.isEmpty) {
                       return const SizedBox.shrink();
                     }
-                    return StaffCarousel(staff: mediaData.staff!)
-                        .bottomSpacing(16);
+                    return KeyedSubtree(
+                      key: const ValueKey('media_staff'),
+                      child: StaffCarousel(staff: mediaData.staff!)
+                          .bottomSpacing(16),
+                    );
                   }),
                   Obx(() {
                     if (controller.isAnilistLoading.value) {
@@ -396,19 +642,22 @@ class _MediaDetailsPageState extends State<MediaDetailsPage> {
                     }
                     final recs = mediaData.recommendations;
                     if (recs.isEmpty) return const SizedBox.shrink();
-                    return ReusableCarousel(
-                      data: recs,
-                      title: controller.isNovel
-                          ? 'Recommended Novels'
-                          : (controller.isAnime
-                              ? 'Recommended Anime'
-                              : 'Recommended Manga'),
-                      variant: DataVariant.recommendation,
-                      type: controller.isNovel
-                          ? ItemType.novel
-                          : (controller.isAnime
-                              ? ItemType.anime
-                              : ItemType.manga),
+                    return KeyedSubtree(
+                      key: const ValueKey('media_recommendations'),
+                      child: ReusableCarousel(
+                        data: recs,
+                        title: controller.isNovel
+                            ? 'Recommended Novels'
+                            : (controller.isAnime
+                                ? 'Recommended Anime'
+                                : 'Recommended Manga'),
+                        variant: DataVariant.recommendation,
+                        type: controller.isNovel
+                            ? ItemType.novel
+                            : (controller.isAnime
+                                ? ItemType.anime
+                                : ItemType.manga),
+                      ),
                     );
                   }),
                 ],
@@ -746,7 +995,6 @@ class _MediaDetailsPageState extends State<MediaDetailsPage> {
       if (!showButton) return const SizedBox.shrink();
 
       String titleText = '';
-      String subtitleText = '';
       String imageUrl = '';
       double progressVal = 0.0;
       VoidCallback? onTap;
@@ -757,16 +1005,22 @@ class _MediaDetailsPageState extends State<MediaDetailsPage> {
         final matchedEp = controller.episodeList.firstWhereOrNull((e) =>
             (e.link != null && e.link!.isNotEmpty && e.link == ep.link) ||
             e.isSameEpisode(ep));
-        final title = (matchedEp?.title?.isNotEmpty == true)
-            ? matchedEp!.title!
-            : (ep.title?.isNotEmpty == true ? ep.title! : 'Episode ${ep.number}');
-        titleText = title;
-        subtitleText = 'Episode ${ep.number}';
+        final episodeNumber =
+            formatEpisodeNumberLabel(ep.number, title: ep.title);
+        final rawEpTitle = (matchedEp?.title?.trim().isNotEmpty == true)
+            ? matchedEp!.title!.trim()
+            : (ep.title?.trim() ?? '');
+        final hasSpecificTitle = rawEpTitle.isNotEmpty &&
+            !rawEpTitle.toLowerCase().startsWith('episode');
+        titleText = hasSpecificTitle
+            ? 'EP $episodeNumber - $rawEpTitle'
+            : 'Episode $episodeNumber';
         imageUrl = ep.thumbnail?.isNotEmpty == true
             ? ep.thumbnail!
             : controller.media.value.poster;
         progressVal = controller.getEpisodeProgress(ep);
         onTap = () async {
+          HapticFeedback.lightImpact();
           await EpisodeListBuilder.showServerSheet(
             context,
             episode: ep,
@@ -781,14 +1035,18 @@ class _MediaDetailsPageState extends State<MediaDetailsPage> {
         final matchedCh = controller.chapterList.firstWhereOrNull((c) =>
             (c.link != null && c.link!.isNotEmpty && c.link == ch.link) ||
             (c.number != null && c.number == ch.number));
-        final title = (matchedCh?.title?.isNotEmpty == true)
-            ? matchedCh!.title!
-            : (ch.title?.isNotEmpty == true ? ch.title! : 'Chapter ${ch.number}');
-        titleText = title;
-        subtitleText = 'Chapter ${ch.number}';
+        final rawChTitle = (matchedCh?.title?.trim().isNotEmpty == true)
+            ? matchedCh!.title!.trim()
+            : (ch.title?.trim() ?? '');
+        final hasSpecificTitle = rawChTitle.isNotEmpty &&
+            !rawChTitle.toLowerCase().startsWith('chapter');
+        titleText = hasSpecificTitle
+            ? 'CH ${ch.number} - $rawChTitle'
+            : 'Chapter ${ch.number}';
         imageUrl = controller.media.value.poster;
         progressVal = controller.getChapterProgress(ch);
         onTap = () async {
+          HapticFeedback.lightImpact();
           final activeSource = controller.activeSource.value;
           if (activeSource == null) return;
           if (controller.isNovel) {
@@ -847,14 +1105,7 @@ class _MediaDetailsPageState extends State<MediaDetailsPage> {
       }
 
       final clampedProgress = progressVal.clamp(0.0, 1.0);
-      final hasLocalProgress = clampedProgress > 0;
-      final isAddedToTracker =
-          controller.isListedMedia.value || controller.mediaProgress.value > 0;
-      final showContinue = hasLocalProgress || isAddedToTracker;
-
-      final playButtonText = showContinue
-          ? (isAnime ? 'Continue Watching' : 'Continue Reading')
-          : (isAnime ? 'Start Watching' : 'Start Reading');
+      final theme = Theme.of(context);
 
       return TweenAnimationBuilder<double>(
         tween: Tween(begin: 0.0, end: 1.0),
@@ -869,250 +1120,97 @@ class _MediaDetailsPageState extends State<MediaDetailsPage> {
             ),
           );
         },
-        child: Container(
-          margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-          padding: const EdgeInsets.all(12),
-          decoration: BoxDecoration(
-            color: context.colors.surfaceContainer.withValues(alpha: 0.8),
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(
-              color: context.colors.onSurface.opaque(0.12, iReallyMeanIt: true),
-              width: 0.8,
-            ),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withValues(alpha: 0.25),
-                blurRadius: 16,
-                offset: const Offset(0, 4),
-              ),
-            ],
-          ),
-          child: AnimatedSize(
-            duration: const Duration(milliseconds: 200),
-            curve: Curves.easeInOut,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Row(
-                  children: [
-                    InkWell(
-                      onTap: onTap,
-                      borderRadius: BorderRadius.circular(16),
-                      child: Padding(
-                        padding: const EdgeInsets.all(6.0),
-                        child: Icon(
-                          isAnime
-                              ? Icons.play_circle_fill_rounded
-                              : Icons.menu_book_rounded,
-                          size: 24,
-                          color: context.colors.primary,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 4),
-                    Expanded(
-                      child: InkWell(
-                        onTap: () {
-                          setState(() {
-                            _isContinueExpanded = !_isContinueExpanded;
-                          });
-                        },
-                        borderRadius: BorderRadius.circular(8),
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(
-                              vertical: 4.0, horizontal: 4.0),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              AnymeXText(
-                                playButtonText,
-                                variant: TextVariant.bold,
-                                size: 13,
-                                color: context.colors.onSurface,
-                              ),
-                              const SizedBox(height: 1),
-                              AnymeXText(
-                                clampedProgress > 0
-                                    ? '$subtitleText • ${(clampedProgress * 100).toInt()}% ${isAnime ? 'watched' : 'read'}'
-                                    : subtitleText,
-                                size: 11,
-                                color: context.colors.onSurface
-                                    .opaque(0.6, iReallyMeanIt: true),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ),
-                    IconButton(
-                      visualDensity: VisualDensity.compact,
-                      onPressed: () {
-                        setState(() {
-                          _isContinueExpanded = !_isContinueExpanded;
-                        });
-                      },
-                      icon: Icon(
-                        _isContinueExpanded
-                            ? Icons.keyboard_arrow_up_rounded
-                            : Icons.keyboard_arrow_down_rounded,
-                        color: context.colors.onSurface
-                            .opaque(0.6, iReallyMeanIt: true),
-                      ),
-                    ),
-                  ],
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+          child: GestureDetector(
+            onTap: onTap,
+            behavior: HitTestBehavior.opaque,
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 300),
+              height: 52,
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+              decoration: BoxDecoration(
+                color: theme.colorScheme.secondaryContainer
+                    .opaque(0.4, iReallyMeanIt: true),
+                borderRadius: BorderRadius.circular(24.multiplyRadius()),
+                border: Border.all(
+                  color: theme.colorScheme.outline
+                      .opaque(0.12, iReallyMeanIt: true),
+                  width: 0.8,
                 ),
-                if (_isContinueExpanded) ...[
-                  const SizedBox(height: 12),
-                  const Divider(height: 1, thickness: 0.5),
-                  const SizedBox(height: 12),
-                  Row(
-                    children: [
-                      ClipRRect(
-                        borderRadius: BorderRadius.circular(8),
-                        child: SizedBox(
-                          width: 80,
-                          height: 48,
-                          child: AnymeXImage(
-                            imageUrl: imageUrl,
-                            fit: BoxFit.cover,
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.opaque(0.12, iReallyMeanIt: true),
+                    blurRadius: 16,
+                    offset: const Offset(0, 4),
+                  ),
+                ],
+              ),
+              child: Row(
+                children: [
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(12),
+                    child: SizedBox(
+                      width: 60,
+                      height: 38,
+                      child: AnymeXImage(
+                        imageUrl: imageUrl,
+                        fit: BoxFit.cover,
+                        radius: 0,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        AnymeXText(
+                          titleText,
+                          size: 11.5,
+                          variant: TextVariant.semiBold,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          isMarquee: true,
+                        ),
+                        const SizedBox(height: 5),
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(50),
+                          child: AnymeXLinearIndicator(
+                            value: clampedProgress > 0 ? clampedProgress : 0.05,
+                            minHeight: 8,
+                            color: theme.colorScheme.primary,
+                            backgroundColor:
+                                theme.colorScheme.onSurface.withOpacity(0.1),
                           ),
                         ),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            AnymeXText(
-                              titleText,
-                              variant: TextVariant.bold,
-                              size: 13,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                            const SizedBox(height: 2),
-                            Wrap(
-                              spacing: 2,
-                              runSpacing: 2,
-                              crossAxisAlignment: WrapCrossAlignment.center,
-                              children: [
-                                Container(
-                                  padding: const EdgeInsets.symmetric(
-                                      horizontal: 8, vertical: 3),
-                                  decoration: BoxDecoration(
-                                    color: context.colors.secondary,
-                                    borderRadius: clampedProgress > 0
-                                        ? const BorderRadius.horizontal(
-                                            left: Radius.circular(8),
-                                            right: Radius.circular(5),
-                                          )
-                                        : BorderRadius.circular(8),
-                                  ),
-                                  child: AnymeXText(
-                                    subtitleText.toUpperCase(),
-                                    style: TextStyle(
-                                      fontFamily: 'Linotte',
-                                      fontSize: 10.0,
-                                      color: context.colors.secondary
-                                                  .computeLuminance() >
-                                              0.5
-                                          ? Colors.black
-                                          : Colors.white,
-                                    ),
-                                  ),
-                                ),
-                                if (clampedProgress > 0)
-                                  Container(
-                                    padding: const EdgeInsets.symmetric(
-                                        horizontal: 8, vertical: 3),
-                                    decoration: BoxDecoration(
-                                      color: context.colors.tertiary,
-                                      borderRadius: const BorderRadius.horizontal(
-                                        left: Radius.circular(5),
-                                        right: Radius.circular(8),
-                                      ),
-                                    ),
-                                    child: AnymeXText(
-                                      '${(clampedProgress * 100).toInt()}% ${isAnime ? 'WATCHED' : 'READ'}',
-                                      style: TextStyle(
-                                        fontFamily: 'Linotte',
-                                        fontSize: 10.0,
-                                        color: context.colors.tertiary
-                                                    .computeLuminance() >
-                                                0.5
-                                            ? Colors.black
-                                            : Colors.white,
-                                      ),
-                                    ),
-                                  ),
-                              ],
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
-                  const SizedBox(height: 12),
-                  AnymexOnTap(
+                  const SizedBox(width: 10),
+                  GestureDetector(
                     onTap: onTap,
                     child: Container(
-                      width: double.infinity,
-                      clipBehavior: Clip.antiAlias,
+                      height: 32,
+                      padding: const EdgeInsets.symmetric(horizontal: 10),
                       decoration: BoxDecoration(
-                        color: context.colors.primary.withValues(alpha: 0.08),
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(
-                          color: context.colors.primary.withValues(alpha: 0.2),
-                          width: 1,
-                        ),
+                        color: theme.colorScheme.primary.opaque(0.9),
+                        borderRadius:
+                            BorderRadius.circular(32.multiplyRadius()),
                       ),
-                      child: LayoutBuilder(
-                        builder: (context, constraints) {
-                          final width = constraints.maxWidth;
-                          return Stack(
-                            children: [
-                              if (clampedProgress > 0)
-                                Positioned(
-                                  left: 0,
-                                  top: 0,
-                                  bottom: 0,
-                                  width: width * clampedProgress,
-                                  child: Container(
-                                    color: context.colors.primary
-                                        .withValues(alpha: 0.22),
-                                  ),
-                                ),
-                              Padding(
-                                padding:
-                                    const EdgeInsets.symmetric(vertical: 10),
-                                child: Row(
-                                  mainAxisAlignment: MainAxisAlignment.center,
-                                  children: [
-                                    Icon(
-                                      isAnime
-                                          ? Icons.play_arrow_rounded
-                                          : Icons.menu_book_rounded,
-                                      size: 18,
-                                      color: context.colors.primary,
-                                    ),
-                                    const SizedBox(width: 6),
-                                    AnymeXText(
-                                      playButtonText,
-                                      variant: TextVariant.bold,
-                                      size: 13,
-                                      color: context.colors.primary,
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ],
-                          );
-                        },
+                      child: Icon(
+                        isAnime
+                            ? Icons.play_arrow_rounded
+                            : Icons.menu_book_rounded,
+                        size: 16,
+                        color: theme.colorScheme.onPrimary,
                       ),
                     ),
                   ),
                 ],
-              ],
+              ),
             ),
           ),
         ),
