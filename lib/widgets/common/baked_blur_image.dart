@@ -11,7 +11,7 @@ import 'package:anymex/controllers/services/storage/anymex_cache_manager.dart';
 
 typedef _BakedRaster = ({int width, int height, Uint8List pixels});
 
-_BakedRaster _processFrostedBackdrop((Uint8List, double, double) task) {
+_BakedRaster _processLegacyFrostedBackdrop((Uint8List, double, double) task) {
   final (sourceBytes, vibrancy, blurAmount) = task;
   final decoded = img.decodeImage(sourceBytes);
   if (decoded == null) {
@@ -19,7 +19,7 @@ _BakedRaster _processFrostedBackdrop((Uint8List, double, double) task) {
   }
 
   final isTall = decoded.height > decoded.width;
-  const targetShortSide = 240;
+  const targetShortSide = 200;
   var scaled = img.copyResize(
     decoded,
     width: isTall ? targetShortSide : null,
@@ -40,6 +40,14 @@ _BakedRaster _processFrostedBackdrop((Uint8List, double, double) task) {
     width: rgbaImage.width,
     height: rgbaImage.height,
     pixels: rgbaImage.getBytes(order: img.ChannelOrder.rgba),
+  );
+}
+
+Future<_BakedRaster> _generateFrostedRaster(
+    Uint8List rawBytes, double saturation, double blurAmount) {
+  return compute(
+    _processLegacyFrostedBackdrop,
+    (rawBytes, saturation, blurAmount),
   );
 }
 
@@ -171,10 +179,7 @@ class BakedBlurImage extends StatefulWidget {
               MeshBlurHelper.processMeshBackdrop,
               (rawBytes, saturation, blurAmount, url.hashCode),
             )
-          : await compute(
-              _processFrostedBackdrop,
-              (rawBytes, saturation, blurAmount),
-            );
+          : await _generateFrostedRaster(rawBytes, saturation, blurAmount);
       final nativeImage = await _inflateNativeImage(raster);
       _storeInCache(cacheKey, nativeImage);
       return nativeImage;
@@ -210,10 +215,7 @@ class BakedBlurImage extends StatefulWidget {
                 MeshBlurHelper.processMeshBackdrop,
                 (rawBytes, saturation, blurAmount, url.hashCode),
               )
-            : await compute(
-                _processFrostedBackdrop,
-                (rawBytes, saturation, blurAmount),
-              );
+            : await _generateFrostedRaster(rawBytes, saturation, blurAmount);
         final nativeImage = await _inflateNativeImage(raster);
         _storeInCache(cacheKey, nativeImage);
         return nativeImage;
@@ -375,14 +377,8 @@ class _BakedBlurImageState extends State<BakedBlurImage> {
 
     if (image != null && widget.fadeBottom) {
       final fadeDistance = (widget.blurAmount * 2.5).clamp(32.0, 140.0);
-      content = Container(
-        decoration: const BoxDecoration(
-          border: Border(
-            bottom: BorderSide(color: Colors.transparent, width: 2.0),
-          ),
-        ),
-        child: ClipRect(
-          child: ShaderMask(
+      content = ClipRect(
+        child: ShaderMask(
             shaderCallback: (bounds) {
               if (bounds.height <= 0) {
                 return const LinearGradient(
@@ -408,11 +404,10 @@ class _BakedBlurImageState extends State<BakedBlurImage> {
             blendMode: BlendMode.dstIn,
             child: content,
           ),
-        ),
-      );
-    } else {
-      content = ClipRect(child: content);
-    }
+        );
+      } else {
+        content = ClipRect(child: content);
+      }
 
     return AnimatedOpacity(
       opacity: image == null ? 0.0 : 1.0,

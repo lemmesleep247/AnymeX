@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'dart:ui';
 import 'package:anymex/controllers/services/anilist/anilist_data.dart';
 import 'package:anymex/controllers/settings/methods.dart';
@@ -29,6 +30,7 @@ class MediaHeader extends StatelessWidget {
     this.onShare,
     this.userStatus,
     this.userProgress,
+    this.extendBehindTitleBar = false,
   });
 
   final Media? data;
@@ -37,12 +39,15 @@ class MediaHeader extends StatelessWidget {
   final VoidCallback? onShare;
   final String? userStatus;
   final String? userProgress;
+  final bool extendBehindTitleBar;
 
   @override
   Widget build(BuildContext context) {
     final isDesktop = MediaQuery.sizeOf(context).width > 700;
     final colors = context.colors;
-    final headerHeight = isDesktop ? 440.0 : 360.0;
+    final desktopTopPad =
+        (Platform.isWindows && extendBehindTitleBar) ? 40.0 : 0.0;
+    final headerHeight = (isDesktop ? 440.0 : 360.0) + desktopTopPad;
     final topPad = MediaQuery.paddingOf(context).top;
 
     final posterWidth = isDesktop ? 158.0 : 120.0;
@@ -65,14 +70,13 @@ class MediaHeader extends StatelessWidget {
                 return const SizedBox.shrink();
               }
               final usePoster = settingsController.usePosterForBlur;
-              final blurSourceUrl = usePoster
-                  ? posterUrl
-                  : (data?.cover?.isNotEmpty == true
-                      ? data!.cover!
-                      : posterUrl);
-              final blurFallbackUrl = usePoster
-                  ? (data?.cover?.isNotEmpty == true ? data!.cover! : posterUrl)
-                  : posterUrl;
+              final effectiveCover =
+                  (data?.cover?.isNotEmpty == true ? data!.cover! : posterUrl);
+              final blurSourceUrl = usePoster ? posterUrl : effectiveCover;
+              final blurFallbackUrl = usePoster ? effectiveCover : posterUrl;
+              if (blurSourceUrl.isEmpty) {
+                return const SizedBox.shrink();
+              }
               final tintBlur = settingsController.tintBlur;
               final blurColor = tintBlur ? colors.primary.opaque(0.4) : null;
               final isMesh = settingsController.detailsBlurStyle == 1;
@@ -135,14 +139,7 @@ class MediaHeader extends StatelessWidget {
                     );
 
               return RepaintBoundary(
-                child: Container(
-                  decoration: const BoxDecoration(
-                    border: Border(
-                      bottom: BorderSide(color: Colors.transparent, width: 2.0),
-                    ),
-                  ),
-                  child: content,
-                ),
+                child: content,
               );
             }),
           ),
@@ -154,9 +151,6 @@ class MediaHeader extends StatelessWidget {
               }
               return Container(
                 decoration: BoxDecoration(
-                  border: const Border(
-                    bottom: BorderSide(color: Colors.transparent, width: 2.0),
-                  ),
                   gradient: LinearGradient(
                     colors: [
                       colors.surface.withValues(alpha: 0.60),
@@ -319,7 +313,7 @@ class MediaHeader extends StatelessWidget {
             ),
           ),
           Positioned(
-              top: topPad + 12,
+              top: topPad + desktopTopPad + 12,
               left: 16,
               child: AnymexOnTap(
                 onTap: () {
@@ -343,7 +337,7 @@ class MediaHeader extends StatelessWidget {
                 ),
               )),
           Positioned(
-            top: topPad + 12,
+            top: topPad + desktopTopPad + 12,
             right: 16,
             child: Container(
               decoration: BoxDecoration(
@@ -375,7 +369,8 @@ class MediaHeader extends StatelessWidget {
                     ),
                   ],
                   AnymexOnTap(
-                    onTap: () => navigate(() => const SettingsUiDetails()),
+                    onTap: () => navigateWithAnimation(
+                        () => SettingsUiDetails(media: data)),
                     margin: 0,
                     child: SizedBox(
                       width: 44,

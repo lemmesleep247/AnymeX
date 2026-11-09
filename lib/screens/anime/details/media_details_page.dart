@@ -1,4 +1,6 @@
+import 'dart:io';
 import 'dart:ui';
+import 'package:anymex/widgets/anymex_widgets/anymex_titlebar.dart';
 import 'package:anymex/database/isar_models/episode.dart';
 import 'package:anymex/utils/media_share.dart';
 import 'package:anymex/models/Media/media.dart';
@@ -33,7 +35,6 @@ import 'package:anymex/controllers/settings/settings.dart';
 import 'package:anymex/widgets/anime/media_header.dart';
 import 'package:anymex/widgets/common/anymex_scaffold.dart';
 import 'package:anymex/widgets/common/baked_blur_image.dart';
-import 'package:anymex/widgets/helper/keep_alive_wrapper.dart';
 import 'package:anymex/widgets/common/reusable_carousel.dart';
 import 'package:anymex_extension_runtime_bridge/anymex_extension_runtime_bridge.dart';
 import 'package:anymex/widgets/anymex_widgets/anymex_container.dart';
@@ -70,9 +71,18 @@ class MediaDetailsPage extends StatefulWidget {
 
 class _MediaDetailsPageState extends State<MediaDetailsPage> {
   late final MediaDetailsController controller;
-  late final PageController pageController;
   late final RxString _posterColor;
-  bool _isAnimatingPage = false;
+  bool _isRouteAnimating = true;
+
+  static final Map<String, ColorScheme> _posterSchemeCache = {};
+  static ColorScheme? _getPosterScheme(Color? seed, Brightness brightness) {
+    if (seed == null) return null;
+    final key = '${seed.value}_${brightness.name}';
+    return _posterSchemeCache.putIfAbsent(
+      key,
+      () => ColorScheme.fromSeed(brightness: brightness, seedColor: seed),
+    );
+  }
 
   CommentSectionController get _commentController {
     final media = widget.media;
@@ -94,21 +104,42 @@ class _MediaDetailsPageState extends State<MediaDetailsPage> {
     );
   }
 
-  void _resolvePosterColor(Media media) {
-    if (media.color.isNotEmpty) {
-      if (_posterColor.value != media.color) {
-        _posterColor.value = media.color;
+  String? _lastExtractedUrl;
+  Worker? _mediaColorWorker;
+
+  void _resolveDynamicColor(Media media, {bool allowExtract = false}) {
+    final usePoster = settingsController.usePosterForBlur;
+    final effectiveCover =
+        (media.cover?.isNotEmpty == true ? media.cover! : media.poster);
+    final targetUrl = usePoster ? media.poster : effectiveCover;
+
+    if (_posterColor.value.isEmpty && media.color.isNotEmpty) {
+      _posterColor.value = media.color;
+    }
+
+    if (targetUrl.isEmpty) {
+      if (!usePoster && _posterColor.value.isNotEmpty) {
+        _posterColor.value = '';
       }
       return;
     }
-    final poster = media.poster;
-    if (poster.isEmpty) return;
-    final cached = ImageColorExtractor.getCachedColor(poster);
+
+    final cached = ImageColorExtractor.getCachedColor(targetUrl);
     if (cached != null) {
-      _posterColor.value = '#${cached.value.toRadixString(16).padLeft(8, '0')}';
+      final hex = '#${cached.value.toRadixString(16).padLeft(8, '0')}';
+      if (_posterColor.value != hex) {
+        _posterColor.value = hex;
+      }
+      _lastExtractedUrl = targetUrl;
       return;
     }
-    ImageColorExtractor.extractColor(poster).then((c) {
+
+    if (!allowExtract || _isRouteAnimating || _lastExtractedUrl == targetUrl) {
+      return;
+    }
+
+    _lastExtractedUrl = targetUrl;
+    ImageColorExtractor.extractColor(targetUrl).then((c) {
       if (c != null && mounted) {
         _posterColor.value = '#${c.value.toRadixString(16).padLeft(8, '0')}';
       }
@@ -118,13 +149,15 @@ class _MediaDetailsPageState extends State<MediaDetailsPage> {
   @override
   void initState() {
     super.initState();
-    _posterColor =
-        (widget.media.color.isNotEmpty ? widget.media.color : '').obs;
-    _resolvePosterColor(widget.media);
+    final usePoster = settingsController.usePosterForBlur;
+    _posterColor = (usePoster && widget.media.color.isNotEmpty
+            ? widget.media.color
+            : '')
+        .obs;
+    _resolveDynamicColor(widget.media, allowExtract: false);
     final initialPage = widget.scrollToCommentId != null
         ? 2
         : widget.initialTabIndex;
-    pageController = PageController(initialPage: initialPage);
     controller = Get.put(
       MediaDetailsController(
         initialMedia: widget.media,
@@ -134,11 +167,40 @@ class _MediaDetailsPageState extends State<MediaDetailsPage> {
       ),
       tag: widget.tag,
     );
+    _mediaColorWorker = ever(controller.media, (m) {
+      if (!_isRouteAnimating) {
+        _resolveDynamicColor(m, allowExtract: true);
+      }
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (Platform.isWindows && mounted) {
+        AnymeXTitleBar.isTransparent.value = true;
+      }
+      final route = ModalRoute.of(context);
+      if (route != null && route.animation != null) {
+        if (route.animation!.isCompleted) {
+          _isRouteAnimating = false;
+          _resolveDynamicColor(controller.media.value, allowExtract: true);
+          if (mounted) setState(() {});
+        } else {
+          route.animation!.addStatusListener((status) {
+            if (status == AnimationStatus.completed && mounted) {
+              setState(() => _isRouteAnimating = false);
+              _resolveDynamicColor(controller.media.value, allowExtract: true);
+            }
+          });
+        }
+      } else {
+        _isRouteAnimating = false;
+        _resolveDynamicColor(controller.media.value, allowExtract: true);
+        if (mounted) setState(() {});
+      }
+    });
   }
 
   @override
   void dispose() {
-    pageController.dispose();
+    _mediaColorWorker?.dispose();
     Get.delete<MediaDetailsController>(tag: widget.tag);
     final isPreloaded = CommentPreloader.to.isPreloaded(widget.media.uniqueId);
     if (!isPreloaded &&
@@ -146,51 +208,41 @@ class _MediaDetailsPageState extends State<MediaDetailsPage> {
             tag: widget.media.uniqueId)) {
       Get.delete<CommentSectionController>(tag: widget.media.uniqueId);
     }
+    if (Platform.isWindows) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        AnymeXTitleBar.isTransparent.value = false;
+      });
+    }
     super.dispose();
   }
 
   void _onTabSelected(int index) {
     if (controller.selectedPage.value == index) return;
     controller.selectedPage.value = index;
-    _isAnimatingPage = true;
-    pageController
-        .animateToPage(
-      index,
-      duration: const Duration(milliseconds: 250),
-      curve: Curves.easeInOut,
-    )
-        .then((_) {
-      _isAnimatingPage = false;
-    });
   }
 
   @override
   Widget build(BuildContext context) {
     return Obx(() {
       final currentMedia = controller.media.value;
-      if (currentMedia.color.isNotEmpty &&
-          _posterColor.value != currentMedia.color) {
-        _posterColor.value = currentMedia.color;
-      } else if (_posterColor.value.isEmpty && currentMedia.poster.isNotEmpty) {
-        _resolvePosterColor(currentMedia);
+      if (!_isRouteAnimating && _lastExtractedUrl == null) {
+        _resolveDynamicColor(currentMedia, allowExtract: true);
       }
 
-      final activeColor = currentMedia.color.isNotEmpty
-          ? currentMedia.color
-          : _posterColor.value;
+      final activeColor = _posterColor.value.isNotEmpty
+          ? _posterColor.value
+          : (settingsController.usePosterForBlur ? currentMedia.color : '');
       final posterSeed =
           (activeColor.isNotEmpty && settingsController.usePosterColor)
               ? AnymeXScaffold.parseColor(activeColor)
               : null;
       final posterScheme = posterSeed != null
-          ? ColorScheme.fromSeed(
-              brightness: Theme.of(context).brightness,
-              seedColor: posterSeed,
-            )
+          ? _getPosterScheme(posterSeed, Theme.of(context).brightness)
           : null;
 
       Widget buildScaffold(BuildContext themedContext) {
         return AnymeXScaffold(
+          extendBehindTitleBar: true,
           color: _posterColor.value,
           extendBody: true,
           resizeToAvoidBottomInset: false,
@@ -205,14 +257,11 @@ class _MediaDetailsPageState extends State<MediaDetailsPage> {
                 UISettingsKeys.detailsBackdropBrightness.get<double>(1.0);
             final media = controller.media.value;
             final posterUrl = media.poster;
-            final coverUrl =
+            final effectiveCover =
                 (media.cover?.isNotEmpty == true ? media.cover! : posterUrl);
             final usePoster = settingsController.usePosterForBlur;
-            final blurSourceUrl = usePoster ? posterUrl : coverUrl;
-            final initialPoster = widget.media.poster;
-            final blurFallbackUrl = initialPoster.isNotEmpty
-                ? initialPoster
-                : (usePoster ? coverUrl : posterUrl);
+            final blurSourceUrl = usePoster ? posterUrl : effectiveCover;
+            final blurFallbackUrl = usePoster ? effectiveCover : posterUrl;
             final tintBlur = settingsController.tintBlur;
             final colors = themedContext.colors;
             final blurColor = tintBlur ? colors.primary.opaque(0.4) : null;
@@ -232,8 +281,11 @@ class _MediaDetailsPageState extends State<MediaDetailsPage> {
                   .copyWith(scrollbars: false),
               child: Align(
                 alignment: Alignment.topCenter,
-                child: NestedScrollView(
-                  headerSliverBuilder: (context, innerBoxIsScrolled) => [
+                child: CustomScrollView(
+                  physics: const AlwaysScrollableScrollPhysics(
+                    parent: BouncingScrollPhysics(),
+                  ),
+                  slivers: [
                     SliverToBoxAdapter(
                       child: Obx(() => MediaHeader(
                             tag: widget.tag,
@@ -241,6 +293,7 @@ class _MediaDetailsPageState extends State<MediaDetailsPage> {
                             posterUrl: controller.media.value.poster,
                             userStatus: controller.mediaStatus.value,
                             userProgress: '${controller.mediaProgress.value}',
+                            extendBehindTitleBar: Platform.isWindows,
                             onShare: () => MediaShare.showOptions(
                               context: themedContext,
                               baseMedia: controller.media.value,
@@ -261,26 +314,41 @@ class _MediaDetailsPageState extends State<MediaDetailsPage> {
                         ),
                       ),
                     ),
+                    Obx(() {
+                      final selected = controller.selectedPage.value;
+                      return SliverMainAxisGroup(
+                        slivers: [
+                          SliverVisibility(
+                            visible: selected == 0,
+                            maintainState: true,
+                            sliver: _buildOverviewTab(themedContext),
+                          ),
+                          SliverVisibility(
+                            visible: selected == 1,
+                            maintainState: true,
+                            sliver: _buildContentTab(themedContext),
+                          ),
+                          SliverVisibility(
+                            visible: selected == 2,
+                            maintainState: true,
+                            sliver: _buildCommentsTab(themedContext),
+                          ),
+                        ],
+                      );
+                    }),
                   ],
-                  body: PageView(
-                    controller: pageController,
-                    physics: const BouncingScrollPhysics(),
-                    onPageChanged: (index) {
-                      if (!_isAnimatingPage) {
-                        controller.selectedPage.value = index;
-                      }
-                    },
-                    children: [
-                      KeepAliveWrapper(child: _buildOverviewTab(themedContext)),
-                      KeepAliveWrapper(child: _buildContentTab(themedContext)),
-                      KeepAliveWrapper(child: _buildCommentsTab(themedContext)),
-                    ],
-                  ),
                 ),
               ),
             );
 
             Widget buildBlurredImage({double? height}) {
+              if (blurSourceUrl.isEmpty || _isRouteAnimating) {
+                return Container(
+                  height: height ?? double.infinity,
+                  width: double.infinity,
+                  color: gradientBgColor,
+                );
+              }
               return isBaked
                   ? BakedBlurImage(
                       url: blurSourceUrl,
@@ -292,6 +360,7 @@ class _MediaDetailsPageState extends State<MediaDetailsPage> {
                       fit: BoxFit.cover,
                       height: height,
                       width: double.infinity,
+                      fadeBottom: true,
                       isMesh: isMesh,
                     )
                   : ColorFiltered(
@@ -317,7 +386,7 @@ class _MediaDetailsPageState extends State<MediaDetailsPage> {
                     );
             }
 
-            if (blurScope == 0 || coverUrl.isEmpty) {
+            if (blurScope == 0) {
               return scrollView;
             }
 
@@ -337,16 +406,8 @@ class _MediaDetailsPageState extends State<MediaDetailsPage> {
                     left: 0,
                     right: 0,
                     height: washHeight,
-                    child: Container(
-                      decoration: const BoxDecoration(
-                        border: Border(
-                          bottom: BorderSide(
-                              color: Colors.transparent, width: 2.0),
-                        ),
-                      ),
-                      child: RepaintBoundary(
-                        child: buildBlurredImage(height: washHeight),
-                      ),
+                    child: RepaintBoundary(
+                      child: buildBlurredImage(height: washHeight),
                     ),
                   ),
                   Positioned(
@@ -356,10 +417,6 @@ class _MediaDetailsPageState extends State<MediaDetailsPage> {
                     height: washHeight + 1.0,
                     child: DecoratedBox(
                       decoration: BoxDecoration(
-                        border: const Border(
-                          bottom: BorderSide(
-                              color: Colors.transparent, width: 2.0),
-                        ),
                         gradient: LinearGradient(
                           begin: Alignment.topCenter,
                           end: Alignment.bottomCenter,
@@ -455,7 +512,13 @@ class _MediaDetailsPageState extends State<MediaDetailsPage> {
       final child = Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          if (selected == 1) _buildContinueButton(context),
+          AnimatedSize(
+            duration: const Duration(milliseconds: 200),
+            curve: Curves.easeOutCubic,
+            child: selected == 1
+                ? _buildContinueButton(context)
+                : const SizedBox.shrink(),
+          ),
           SafeArea(
             child: ResponsiveNavBar(
               isDesktop: false,
@@ -579,10 +642,7 @@ class _MediaDetailsPageState extends State<MediaDetailsPage> {
 
       final rels = (mediaData.relations ?? []);
 
-      return CustomScrollView(
-        key: const PageStorageKey<String>('Overview'),
-        physics: const BouncingScrollPhysics(
-            parent: AlwaysScrollableScrollPhysics()),
+      return SliverMainAxisGroup(
         slivers: [
           SliverToBoxAdapter(
             child: Center(
@@ -594,7 +654,7 @@ class _MediaDetailsPageState extends State<MediaDetailsPage> {
                       return _buildStatsShimmer(context).bottomSpacing(16);
                     }
                     return KeyedSubtree(
-                      key: ValueKey('media_stats_${controller.selectedPage.value}'),
+                      key: const ValueKey('media_stats'),
                       child: buildMediaStatsSection(context, controller)
                           .bottomSpacing(16)
                           .animateSection(onScroll: false),
@@ -672,10 +732,7 @@ class _MediaDetailsPageState extends State<MediaDetailsPage> {
 
   Widget _buildContentTab(BuildContext context) {
     if (controller.isAnime) {
-      return CustomScrollView(
-        key: const PageStorageKey<String>('Content'),
-        physics: const BouncingScrollPhysics(
-            parent: AlwaysScrollableScrollPhysics()),
+      return SliverMainAxisGroup(
         slivers: [
           EpisodeSection(
             searchedTitle: controller.searchedTitle,
@@ -697,10 +754,7 @@ class _MediaDetailsPageState extends State<MediaDetailsPage> {
       );
     }
 
-    return CustomScrollView(
-      key: const PageStorageKey<String>('Content'),
-      physics:
-          const BouncingScrollPhysics(parent: AlwaysScrollableScrollPhysics()),
+    return SliverMainAxisGroup(
       slivers: [
         ChapterSection(
           searchedTitle: controller.searchedTitle,
@@ -732,12 +786,7 @@ class _MediaDetailsPageState extends State<MediaDetailsPage> {
         break;
     }
 
-    return CustomScrollView(
-      key: const PageStorageKey<String>('Comments'),
-      physics: const BouncingScrollPhysics(
-        parent: AlwaysScrollableScrollPhysics(),
-      ),
-      keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+    return SliverMainAxisGroup(
       slivers: [
         SliverToBoxAdapter(
           child: Padding(
