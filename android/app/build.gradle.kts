@@ -12,11 +12,15 @@ plugins {
 android {
     namespace = "com.ryan.anymex"
     compileSdk = 36
-    ndkVersion = flutter.ndkVersion
+    ndkVersion = "28.2.13676358"
 
     dependenciesInfo {
         includeInApk = false
         includeInBundle = false
+    }
+
+    androidResources {
+        ignoreAssetsPattern = "!.env:!.svn:!.git:!.ds_store:!*.scc:.*:<dir>_*:!CVS:!thumbs.db:!picasa.ini:!*~"
     }
 
     compileOptions {
